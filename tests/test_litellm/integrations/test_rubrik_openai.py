@@ -842,6 +842,101 @@ class TestAsyncPostCallStreamingIteratorHook:
         assert chunks[0].choices[0].delta.tool_calls[0].id == "call_123"
         assert chunks[2].choices[0].finish_reason == "tool_calls"
 
+    async def test_streaming_finish_chunk_with_tool_calls_does_not_double_args(self, handler):
+        """
+        Regression test: some models (e.g. GPT-5) repeat the complete tool call in the
+        finish chunk instead of sending an empty delta.  This must not cause the arguments
+        to be concatenated twice before being sent to the blocking service.
+        """
+        full_args = '{"order_id":"ORD-12345","reason":"Item arrived damaged"}'
+        mock_post, request_data = create_blocking_mock_post(block_all=False)
+
+        mock_client = AsyncMock()
+        mock_client.post = mock_post
+        handler.tool_blocking_client = mock_client
+
+        async def stream_with_repeated_finish():
+            # Chunk 1: tool call header with empty arguments
+            yield ModelResponse(
+                choices=[
+                    StreamingChoices(
+                        index=0,
+                        delta=Delta(
+                            tool_calls=[
+                                ChatCompletionDeltaToolCall(
+                                    index=0,
+                                    id="call_refund",
+                                    type="function",
+                                    function=Function(name="refund_order", arguments=""),
+                                )
+                            ]
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                stream=True,
+            )
+            # Chunk 2: arguments fragment
+            yield ModelResponse(
+                choices=[
+                    StreamingChoices(
+                        index=0,
+                        delta=Delta(
+                            tool_calls=[
+                                ChatCompletionDeltaToolCall(
+                                    index=0,
+                                    id=None,
+                                    type=None,
+                                    function=Function(name=None, arguments=full_args),
+                                )
+                            ]
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                stream=True,
+            )
+            # Chunk 3: finish chunk that also repeats the complete tool call (GPT-5 style)
+            yield ModelResponse(
+                choices=[
+                    StreamingChoices(
+                        index=0,
+                        delta=Delta(
+                            tool_calls=[
+                                ChatCompletionDeltaToolCall(
+                                    index=0,
+                                    id=None,
+                                    type=None,
+                                    function=Function(name=None, arguments=full_args),
+                                )
+                            ]
+                        ),
+                        finish_reason="tool_calls",
+                    )
+                ],
+                stream=True,
+            )
+
+        chunks = []
+        async for chunk in handler.async_post_call_streaming_iterator_hook(
+            user_api_key_dict={},
+            response=stream_with_repeated_finish(),
+            request_data=create_openai_request_data(),
+        ):
+            chunks.append(chunk)
+
+        # Verify the blocking service received non-doubled arguments
+        assert "choices" in request_data, "Blocking service was not called"
+        sent_tool_calls = request_data["choices"][0]["message"]["tool_calls"]
+        assert len(sent_tool_calls) == 1
+        sent_args = sent_tool_calls[0]["function"]["arguments"]
+        assert sent_args == full_args, f"Arguments were doubled: {sent_args!r}"
+        json.loads(sent_args)  # Must be valid JSON, not two concatenated objects
+
+        # Plugin should emit one chunk (all tools allowed → re-emitted as tool_calls)
+        assert len(chunks) == 1
+        assert chunks[0].choices[0].finish_reason == "tool_calls"
+
 
 @pytest.fixture
 def mock_response_no_tools():

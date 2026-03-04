@@ -49,6 +49,7 @@ from litellm.types.utils import (
     ChatCompletionMessageToolCall,
     Choices,
     Delta,
+    Function,
     LLMResponseTypes,
     Message,
     ModelResponse,
@@ -166,16 +167,16 @@ class RubrikLogger(CustomBatchLogger):
                 try:
                     if system_prompt_msg_list:
                         system_scaffold = {"role": "system", "content": system_prompt_msg_list}
-                        if type(standard_logging_payload.messages) is list:  # type: ignore
-                            standard_logging_payload.messages.insert(0, system_scaffold)  # type: ignore
+                        if type(standard_logging_payload["messages"]) is list:
+                            standard_logging_payload["messages"].insert(0, system_scaffold)  # type: ignore[union-attr]
                         elif (
-                            type(standard_logging_payload.messages) is dict
-                            or type(standard_logging_payload.messages) is str
-                        ):  # type: ignore
-                            standard_logging_payload.messages = [
-                                standard_logging_payload.messages,
+                            type(standard_logging_payload["messages"]) is dict
+                            or type(standard_logging_payload["messages"]) is str
+                        ):
+                            standard_logging_payload["messages"] = [
+                                standard_logging_payload["messages"],
                                 system_scaffold,
-                            ]  # type: ignore
+                            ]
                 except Exception as e:
                     verbose_logger.debug(f"Error adding system prompt to messages: {e}")
 
@@ -256,14 +257,14 @@ class RubrikLogger(CustomBatchLogger):
                 return response
 
             if response_format == LLMResponseFormat.ANTHROPIC:
-                openai_dict = self._anthropic_response_to_openai_dict(response)
+                openai_dict = self._anthropic_response_to_openai_dict(cast(Dict[str, Any], response))
             else:
-                openai_dict = response.model_dump()
+                openai_dict = cast(ModelResponse, response).model_dump()
 
             modified_openai_dict = await self._check_and_modify_response(openai_dict)
 
             if response_format == LLMResponseFormat.ANTHROPIC:
-                self._openai_dict_to_anthropic_response(modified_openai_dict, response)
+                self._openai_dict_to_anthropic_response(modified_openai_dict, cast(Dict[str, Any], response))
             else:
                 for key, value in modified_openai_dict.items():
                     if hasattr(response, key):
@@ -357,22 +358,27 @@ class RubrikLogger(CustomBatchLogger):
                 chunk_template = copy.deepcopy(chunk)
 
             choice: StreamingChoices = cast(StreamingChoices, chunk.choices[0])
+            has_tool_calls = bool(choice.delta and choice.delta.tool_calls)
+            is_finished = bool(choice.finish_reason)
 
-            if choice.delta and choice.delta.tool_calls:
-                for delta in choice.delta.tool_calls:
+            # 1) Accumulate tool call fragments.
+            #    Some models (e.g. GPT-5) repeat the complete arguments in the
+            #    finish chunk — skip accumulation when we already have data to
+            #    avoid doubling, but still accumulate if this is the first chunk.
+            if has_tool_calls and not (is_finished and accumulated_tool_calls):
+                for delta in choice.delta.tool_calls or []:
                     self._accumulate_openai_tool_call_delta(
                         cast(ChatCompletionDeltaToolCall, cast(object, delta)),
                         accumulated_tool_calls,
                     )
-                continue
 
-            # Pass through non-tool chunks when no tools are being accumulated
+            # 2) Pass through chunks that aren't part of a tool call sequence.
             if not accumulated_tool_calls:
                 yield chunk
                 continue
 
-            # On finish, validate and emit filtered tool calls
-            if choice.finish_reason:
+            # 3) Once all tool calls are complete, validate and emit.
+            if is_finished and chunk_template is not None:
                 yield await self._create_openai_allowed_tools_chunk(chunk_template, accumulated_tool_calls)
 
     async def _handle_anthropic_streaming(self, response: Any) -> AsyncGenerator[bytes, None]:
@@ -458,7 +464,7 @@ class RubrikLogger(CustomBatchLogger):
         delta_index = delta.index
 
         if delta_index not in accumulated_tool_calls:
-            accumulated_tool_calls[delta_index] = delta.model_copy()
+            accumulated_tool_calls[delta_index] = delta.model_copy(deep=True)
             return
 
         if not delta.function:
@@ -621,7 +627,7 @@ class RubrikLogger(CustomBatchLogger):
                 index=tool_data.index,
                 id=tool_id,
                 type="function",
-                function={"name": tool_data.name, "arguments": tool_data.partial_json},
+                function=Function(name=tool_data.name, arguments=tool_data.partial_json),
             )
             for tool_id, tool_data in tool_calls.items()
         ]
@@ -762,8 +768,8 @@ class RubrikLogger(CustomBatchLogger):
         anthropic_response = self.anthropic_adapter.translate_openai_response_to_anthropic(
             response=ModelResponse(**openai_dict),
         )
-        original_response["content"] = anthropic_response["content"]
-        original_response["stop_reason"] = anthropic_response["stop_reason"]
+        original_response["content"] = anthropic_response.get("content", [])
+        original_response["stop_reason"] = anthropic_response.get("stop_reason", "end_turn")
 
 
 # Module-level handler instance for use with litellm_settings.callbacks
