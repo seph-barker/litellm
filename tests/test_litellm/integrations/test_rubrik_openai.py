@@ -17,7 +17,7 @@ from litellm.types.utils import (
     ChatCompletionDeltaToolCall,
     Delta,
     Function,
-    ModelResponse,
+    ModelResponseStream,
     StreamingChoices,
 )
 
@@ -81,21 +81,17 @@ def create_streaming_choice(choice_dict: Dict[str, Any]) -> StreamingChoices:
     )
 
 
-def create_model_response_from_dict(chunk_data: Dict[str, Any]) -> ModelResponse:
-    """Convert a dict to ModelResponse with properly typed nested objects."""
-    return ModelResponse(
+def create_model_response_from_dict(chunk_data: Dict[str, Any]) -> ModelResponseStream:
+    """Convert a dict to ModelResponseStream with properly typed nested objects."""
+    return ModelResponseStream(
         id=chunk_data.get("id"),
         created=chunk_data.get("created"),
-        model=chunk_data.get("model"),
-        object=chunk_data.get("object"),
-        system_fingerprint=chunk_data.get("system_fingerprint"),
         choices=[create_streaming_choice(choice_data) for choice_data in chunk_data.get("choices", [])],
-        stream=True,
     )
 
 
-async def create_sse_stream_from_file(file_path: Path) -> AsyncGenerator[ModelResponse, None]:
-    """Parse an SSE file and yield ModelResponse chunks."""
+async def create_sse_stream_from_file(file_path: Path) -> AsyncGenerator[ModelResponseStream, None]:
+    """Parse an SSE file and yield ModelResponseStream chunks."""
     with open(file_path) as f:
         lines = f.readlines()
 
@@ -113,11 +109,10 @@ async def create_sse_stream_from_file(file_path: Path) -> AsyncGenerator[ModelRe
 async def create_tool_call_stream(
     deltas: List[ChatCompletionDeltaToolCall],
     finish_reason: str = "tool_calls",
-) -> AsyncGenerator[ModelResponse, None]:
-    """Yield ModelResponse chunks for a sequence of tool call deltas followed by a finish chunk."""
+) -> AsyncGenerator[ModelResponseStream, None]:
+    """Yield ModelResponseStream chunks for a sequence of tool call deltas followed by a finish chunk."""
     for delta in deltas:
-        yield ModelResponse(
-            stream=True,
+        yield ModelResponseStream(
             choices=[
                 StreamingChoices(
                     index=0,
@@ -127,8 +122,7 @@ async def create_tool_call_stream(
             ],
         )
 
-    yield ModelResponse(
-        stream=True,
+    yield ModelResponseStream(
         choices=[
             StreamingChoices(
                 index=0,
@@ -204,6 +198,60 @@ class TestInitialization:
             with patch("asyncio.create_task", Mock()):
                 handler = RubrikLogger()
                 assert handler.tool_blocking_endpoint == "http://localhost:8080/v1/after_completion/openai/v1"
+
+    def test_v1_suffix_stripped_as_substring_not_charset(self):
+        """Test that /v1 is stripped as a substring, not as a character set.
+
+        rstrip("/v1") would incorrectly strip characters {/, v, 1} from the
+        end, corrupting URLs like 'http://host/v11'. removesuffix only strips
+        the exact substring.
+        """
+        with patch("asyncio.create_task", Mock()):
+            # URL ending in /v1 should be stripped
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host/v1"}):
+                h = RubrikLogger()
+                assert h.tool_blocking_endpoint == "http://host/v1/after_completion/openai/v1"
+
+            # URL ending in /v11 must NOT be corrupted (rstrip would strip to "http://host/")
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host/v11"}):
+                h = RubrikLogger()
+                assert h.tool_blocking_endpoint == "http://host/v11/v1/after_completion/openai/v1"
+
+            # URL without /v1 suffix should be unchanged
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host/service"}):
+                h = RubrikLogger()
+                assert h.tool_blocking_endpoint == "http://host/service/v1/after_completion/openai/v1"
+
+    def test_sampling_rate_fractional(self):
+        """Test that fractional sampling rates like 0.5 are correctly parsed.
+
+        isdigit() would reject '0.5', silently leaving the rate at 1.0.
+        """
+        with patch("asyncio.create_task", Mock()):
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host", "RUBRIK_SAMPLING_RATE": "0.5"}):
+                h = RubrikLogger()
+                assert h.sampling_rate == 0.5
+
+    def test_sampling_rate_integer(self):
+        """Test that integer sampling rates still work."""
+        with patch("asyncio.create_task", Mock()):
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host", "RUBRIK_SAMPLING_RATE": "1"}):
+                h = RubrikLogger()
+                assert h.sampling_rate == 1.0
+
+    def test_sampling_rate_invalid_ignored(self):
+        """Test that invalid sampling rates are handled gracefully (default to 1.0)."""
+        with patch("asyncio.create_task", Mock()):
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host", "RUBRIK_SAMPLING_RATE": "abc"}):
+                h = RubrikLogger()
+                assert h.sampling_rate == 1.0
+
+    def test_sampling_rate_unset_defaults_to_one(self):
+        """Test that unset sampling rate defaults to 1.0."""
+        with patch("asyncio.create_task", Mock()):
+            with patch.dict(os.environ, {"RUBRIK_WEBHOOK_URL": "http://host"}, clear=True):
+                h = RubrikLogger()
+                assert h.sampling_rate == 1.0
 
 
 @pytest.mark.asyncio
@@ -483,16 +531,13 @@ class TestAsyncPostCallStreamingIteratorHook:
         """Test that streaming responses without tool calls pass through unchanged."""
 
         async def mock_stream():
-            yield ModelResponse(
-                stream=True,
+            yield ModelResponseStream(
                 choices=[StreamingChoices(index=0, delta=Delta(content="Hello"), finish_reason=None)],
             )
-            yield ModelResponse(
-                stream=True,
+            yield ModelResponseStream(
                 choices=[StreamingChoices(index=0, delta=Delta(content=" world"), finish_reason=None)],
             )
-            yield ModelResponse(
-                stream=True,
+            yield ModelResponseStream(
                 choices=[StreamingChoices(index=0, delta=Delta(content=None), finish_reason="stop")],
             )
 
@@ -857,7 +902,7 @@ class TestAsyncPostCallStreamingIteratorHook:
 
         async def stream_with_repeated_finish():
             # Chunk 1: tool call header with empty arguments
-            yield ModelResponse(
+            yield ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         index=0,
@@ -874,10 +919,9 @@ class TestAsyncPostCallStreamingIteratorHook:
                         finish_reason=None,
                     )
                 ],
-                stream=True,
             )
             # Chunk 2: arguments fragment
-            yield ModelResponse(
+            yield ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         index=0,
@@ -894,10 +938,9 @@ class TestAsyncPostCallStreamingIteratorHook:
                         finish_reason=None,
                     )
                 ],
-                stream=True,
             )
             # Chunk 3: finish chunk that also repeats the complete tool call (GPT-5 style)
-            yield ModelResponse(
+            yield ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         index=0,
@@ -914,7 +957,6 @@ class TestAsyncPostCallStreamingIteratorHook:
                         finish_reason="tool_calls",
                     )
                 ],
-                stream=True,
             )
 
         chunks = []

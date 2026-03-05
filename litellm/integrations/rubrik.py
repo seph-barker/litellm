@@ -53,6 +53,7 @@ from litellm.types.utils import (
     LLMResponseTypes,
     Message,
     ModelResponse,
+    ModelResponseStream,
     StandardLoggingPayload,
     StreamingChoices,
 )
@@ -61,7 +62,6 @@ from litellm.types.utils import (
 _EVENT_CONTENT_BLOCK_START = "content_block_start"
 _EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
 _EVENT_CONTENT_BLOCK_STOP = "content_block_stop"
-_EVENT_MESSAGE_START = "message_start"
 _EVENT_MESSAGE_DELTA = "message_delta"
 _EVENT_MESSAGE_STOP = "message_stop"
 
@@ -76,12 +76,9 @@ _ENDPOINT_ANTHROPIC_MESSAGES = "/messages"
 # Webhook endpoint paths
 _WEBHOOK_PATH_TOOL_BLOCKING = "/v1/after_completion/openai/v1"
 _WEBHOOK_PATH_LOGGING_BATCH = "/v1/litellm/batch"
-_WEBHOOK_PATH_LOGGING_NON_BATCH = "/v1/litellm"
-
 _CONTENT_BLOCK_EVENTS = frozenset(
     {_EVENT_CONTENT_BLOCK_START, _EVENT_CONTENT_BLOCK_DELTA, _EVENT_CONTENT_BLOCK_STOP},
 )
-_MESSAGE_BLOCK_EVENTS = frozenset({_EVENT_MESSAGE_START, _EVENT_MESSAGE_DELTA, _EVENT_MESSAGE_STOP})
 _TERMINAL_MESSAGE_EVENTS = frozenset({_EVENT_MESSAGE_DELTA, _EVENT_MESSAGE_STOP})
 
 
@@ -113,8 +110,11 @@ class RubrikLogger(CustomBatchLogger):
 
         self.sampling_rate = 1.0
         rbrk_sampling_rate = os.getenv("RUBRIK_SAMPLING_RATE")
-        if rbrk_sampling_rate is not None and rbrk_sampling_rate.strip().isdigit():
-            self.sampling_rate = float(rbrk_sampling_rate)
+        if rbrk_sampling_rate is not None:
+            try:
+                self.sampling_rate = float(rbrk_sampling_rate.strip())
+            except ValueError:
+                verbose_logger.warning(f"Invalid RUBRIK_SAMPLING_RATE: {rbrk_sampling_rate!r}, using 1.0")
 
         # Initialize helpers for format conversion
         self.anthropic_adapter = LiteLLMAnthropicMessagesAdapter()
@@ -131,10 +131,9 @@ class RubrikLogger(CustomBatchLogger):
         if _webhook_url is None:
             raise ValueError("environment variable RUBRIK_WEBHOOK_URL not set")
 
-        _webhook_url = _webhook_url.rstrip("/").rstrip("/v1")
+        _webhook_url = _webhook_url.rstrip("/").removesuffix("/v1")
         self.tool_blocking_endpoint = f"{_webhook_url}{_WEBHOOK_PATH_TOOL_BLOCKING}"
         self.logging_endpoint = f"{_webhook_url}{_WEBHOOK_PATH_LOGGING_BATCH}"
-        self.non_batch_endpoint = f"{_webhook_url}{_WEBHOOK_PATH_LOGGING_NON_BATCH}"
 
         # Cache the httpx client for logging (uses LiteLLM's shared client)
         self.async_httpx_client = get_async_httpx_client(llm_provider=httpxSpecialProvider.LoggingCallback)
@@ -146,7 +145,6 @@ class RubrikLogger(CustomBatchLogger):
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
 
-        self.log_queue: List[Any] = []
         try:
             asyncio.create_task(self.periodic_flush())
         except RuntimeError:
@@ -283,7 +281,7 @@ class RubrikLogger(CustomBatchLogger):
         user_api_key_dict: Any,
         response: AsyncGenerator,
         request_data: Dict[str, Any],
-    ) -> AsyncGenerator[Union[ModelResponse, bytes], None]:
+    ) -> AsyncGenerator[Union[ModelResponseStream, bytes], None]:
         """
         Intercept streaming responses to block tool calls in real-time.
 
@@ -305,9 +303,9 @@ class RubrikLogger(CustomBatchLogger):
                 yield chunk
             return
 
-        buffered_chunks: List[Union[ModelResponse, bytes]] = []
+        buffered_chunks: List[Union[ModelResponseStream, bytes]] = []
 
-        async def buffering_generator() -> AsyncGenerator[Union[ModelResponse, bytes], None]:
+        async def buffering_generator() -> AsyncGenerator[Union[ModelResponseStream, bytes], None]:
             """Wrapper that buffers chunks as they're consumed."""
             async for chunk in response:
                 buffered_chunks.append(chunk)
@@ -339,7 +337,7 @@ class RubrikLogger(CustomBatchLogger):
             return LLMResponseFormat.ANTHROPIC
         return LLMResponseFormat.UNKNOWN
 
-    async def _handle_openai_streaming(self, response: Any) -> AsyncGenerator[ModelResponse, None]:
+    async def _handle_openai_streaming(self, response: Any) -> AsyncGenerator[ModelResponseStream, None]:
         """
         Process OpenAI streaming responses, filtering blocked tool calls.
 
@@ -347,7 +345,7 @@ class RubrikLogger(CustomBatchLogger):
         all tools with the blocking service and yields a synthetic response.
         """
         accumulated_tool_calls: Dict[int, ChatCompletionDeltaToolCall] = {}
-        chunk_template: Optional[ModelResponse] = None
+        chunk_template: Optional[ModelResponseStream] = None
 
         async for chunk in response:
             if not chunk.choices:
@@ -602,9 +600,9 @@ class RubrikLogger(CustomBatchLogger):
 
     async def _create_openai_allowed_tools_chunk(
         self,
-        chunk_template: ModelResponse,
+        chunk_template: ModelResponseStream,
         tool_calls_by_index: Dict[int, ChatCompletionDeltaToolCall],
-    ) -> ModelResponse:
+    ) -> ModelResponseStream:
         """Create a synthetic OpenAI chunk containing only allowed tool calls."""
         allowed_tools, explanation = await self._get_allowed_tool_calls(tool_calls_by_index)
         choice: StreamingChoices = cast(StreamingChoices, chunk_template.choices[0])
@@ -765,6 +763,7 @@ class RubrikLogger(CustomBatchLogger):
         original_response: Any,
     ) -> None:
         """Convert OpenAI format dict back to Anthropic format, updating the original in-place."""
+        openai_dict.setdefault("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         anthropic_response = self.anthropic_adapter.translate_openai_response_to_anthropic(
             response=ModelResponse(**openai_dict),
         )

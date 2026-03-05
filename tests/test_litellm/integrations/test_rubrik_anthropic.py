@@ -283,6 +283,84 @@ async def test_anthropic_multiple_tool_calls_blocked(handler):
 
 
 @pytest.mark.asyncio
+class TestAnthropicRoundTrip:
+    """Test OpenAI↔Anthropic format conversion edge cases."""
+
+    async def test_openai_dict_to_anthropic_without_usage_key(self, handler):
+        """Test that _openai_dict_to_anthropic_response doesn't crash when usage is missing.
+
+        translate_openai_response_to_anthropic accesses response.usage
+        unconditionally, so the conversion must provide a default.
+        """
+        openai_dict: Dict[str, Any] = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 123,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "stop",
+                },
+            ],
+            # No "usage" key — this is what the tool-blocking service may return
+        }
+        original_response: Dict[str, Any] = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "bad_tool", "input": {}}],
+            "stop_reason": "tool_use",
+            "model": "test-model",
+        }
+
+        # Should not raise AttributeError
+        handler._openai_dict_to_anthropic_response(openai_dict, original_response)
+
+        assert original_response["stop_reason"] == "end_turn"
+        assert isinstance(original_response["content"], list)
+
+    async def test_openai_dict_to_anthropic_with_usage_key(self, handler):
+        """Test that _openai_dict_to_anthropic_response works normally when usage is present."""
+        openai_dict: Dict[str, Any] = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 123,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "stop",
+                },
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        original_response: Dict[str, Any] = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "original"}],
+            "stop_reason": "end_turn",
+            "model": "test-model",
+        }
+
+        handler._openai_dict_to_anthropic_response(openai_dict, original_response)
+
+        assert original_response["stop_reason"] == "end_turn"
+        assert isinstance(original_response["content"], list)
+
+
+@pytest.mark.asyncio
 class TestAnthropicStreaming:
     """Test Anthropic streaming format support."""
 
