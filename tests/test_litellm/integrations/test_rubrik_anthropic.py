@@ -55,7 +55,7 @@ def create_openai_request_data() -> Dict[str, Any]:
 async def test_anthropic_all_tools_allowed(handler):
     """Test Anthropic format when all tools are allowed."""
 
-    sample_file = Path(__file__).parent / "sample_data" / "anthropic_tool_call_response.json"
+    sample_file = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_tool_call_response.json"
     with open(sample_file) as f:
         response_dict = json.load(f)
 
@@ -89,7 +89,7 @@ async def test_anthropic_all_tools_allowed(handler):
 async def test_anthropic_dict_response_with_blocking(handler):
     """Test Anthropic format dict response when tools are blocked."""
 
-    sample_file = Path(__file__).parent / "sample_data" / "anthropic_tool_call_response.json"
+    sample_file = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_tool_call_response.json"
     with open(sample_file) as f:
         response_dict = json.load(f)
 
@@ -138,7 +138,7 @@ async def test_anthropic_dict_response_with_blocking(handler):
 async def test_anthropic_text_only_response(handler):
     """Test Anthropic format with text-only response (no tool calls)."""
 
-    sample_file = Path(__file__).parent / "sample_data" / "anthropic_text_response.json"
+    sample_file = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_text_response.json"
     with open(sample_file) as f:
         response_dict = json.load(f)
 
@@ -170,7 +170,7 @@ async def test_anthropic_text_only_response(handler):
 async def test_anthropic_multiple_tool_calls_allowed(handler):
     """Test Anthropic format with multiple tool calls when all tools are allowed."""
 
-    sample_file = Path(__file__).parent / "sample_data" / "anthropic_multiple_tool_call_response.json"
+    sample_file = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_multiple_tool_call_response.json"
     with open(sample_file) as f:
         response_dict = json.load(f)
 
@@ -217,7 +217,7 @@ async def test_anthropic_multiple_tool_calls_allowed(handler):
 async def test_anthropic_multiple_tool_calls_blocked(handler):
     """Test Anthropic format with multiple tool calls when all tools are blocked."""
 
-    sample_file = Path(__file__).parent / "sample_data" / "anthropic_multiple_tool_call_response.json"
+    sample_file = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_multiple_tool_call_response.json"
     with open(sample_file) as f:
         response_dict = json.load(f)
 
@@ -567,7 +567,7 @@ class TestAnthropicStreaming:
 
     async def test_anthropic_streaming_blocking_with_real_data(self, handler):
         """Test blocking tool call using real Anthropic streaming data."""
-        sample_data_path = Path(__file__).parent / "sample_data" / "anthropic_streaming_tool_call_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_streaming_tool_call_response"
 
         async def mock_post(*args: Any, **kwargs: Any) -> Mock:
             return Mock(
@@ -606,7 +606,7 @@ class TestAnthropicStreaming:
 
     async def test_anthropic_streaming_allowing_with_real_data(self, handler):
         """Test allowing tool calls using real Anthropic streaming data (no blocking)."""
-        sample_data_path = Path(__file__).parent / "sample_data" / "anthropic_streaming_tool_call_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "anthropic_streaming_tool_call_response"
 
         async def mock_post(*args: Any, **kwargs: Any) -> Mock:
             request_json = kwargs.get("json", {})
@@ -631,7 +631,7 @@ class TestAnthropicStreaming:
 
     async def test_anthropic_streaming_text_only_with_real_data(self, handler):
         """Test that text-only Anthropic responses (no tool calls) pass through unmodified."""
-        sample_data_path = Path(__file__).parent / "sample_data" / "anthropi_streaming_text_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "anthropi_streaming_text_response"
         blocking_service_called: Dict[str, Any] = {}
 
         async def mock_post(*args: Any, **kwargs: Any) -> Mock:

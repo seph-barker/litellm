@@ -658,7 +658,7 @@ class TestAsyncPostCallStreamingIteratorHook:
         mock_client.post = mock_post
         handler.tool_blocking_client = mock_client
 
-        sample_data_path = Path(__file__).parent / "sample_data" / "openai_streaming_multiple_tool_call_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "openai_streaming_multiple_tool_call_response"
 
         chunks = []
         async for chunk in handler.async_post_call_streaming_iterator_hook(
@@ -774,7 +774,7 @@ class TestAsyncPostCallStreamingIteratorHook:
         mock_client.post = mock_post
         handler.tool_blocking_client = mock_client
 
-        sample_data_path = Path(__file__).parent / "sample_data" / "openai_streaming_multiple_tool_call_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "openai_streaming_multiple_tool_call_response"
 
         chunks = []
         async for chunk in handler.async_post_call_streaming_iterator_hook(
@@ -811,7 +811,7 @@ class TestAsyncPostCallStreamingIteratorHook:
         mock_client.post = mock_post
         handler.tool_blocking_client = mock_client
 
-        sample_data_path = Path(__file__).parent / "sample_data" / "openai_streaming_text_response"
+        sample_data_path = Path(__file__).parent / "rubrik_test_sample_data" / "openai_streaming_text_response"
 
         chunks = []
         async for chunk in handler.async_post_call_streaming_iterator_hook(
